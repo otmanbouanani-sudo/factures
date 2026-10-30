@@ -299,3 +299,17 @@ label.check input { width: auto; }
 @media (max-width: 820px) {
   .line { grid-template-areas: "tools tools" "desc desc" "sub sub" "qty price" "amount x"; }
 }
+
+/* full-width, auto-growing description fields: the whole text reads in one go */
+.line {
+  grid-template-columns: 140px 170px 1fr 32px;
+  grid-template-areas: "tools tools tools tools" "desc desc desc desc" "sub sub sub sub" "qty price amount x";
+  align-items: end;
+}
+.line .icon-btn { align-self: end; margin-bottom: 4px; }
+.l-amount { align-self: end; padding-bottom: 9px; font-size: 16px; }
+.line textarea, .tpl textarea, #rm-desc, #rm-sub { resize: none; overflow: hidden; line-height: 1.45; min-height: 40px; }
+.l-desc textarea { font-weight: 500; }
+@media (max-width: 820px) {
+  .line { grid-template-columns: 1fr 1fr; grid-template-areas: "tools tools" "desc desc" "sub sub" "qty price" "amount x"; }
+}

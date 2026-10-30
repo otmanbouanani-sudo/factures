@@ -12,7 +12,7 @@ Application web de facturation pour indépendant belge : clients, factures au jo
   - Hors UE (Royaume-Uni…) : 0 %, avec la mention « non soumise à la TVA belge » (art. 21, § 2 du Code de la TVA).
   - Le taux et la mention restent modifiables facture par facture.
 - **Numérotation** continue au format `2026/047`, qui repart à 001 chaque année.
-- **Communication structurée** belge (`+++xxx/xxxx/xxxxx+++`) sur chaque facture (une nouvelle par numéro), et **QR code de paiement** (EPC) lu par les apps bancaires.
+- **Communication structurée** belge (`+++xxx/xxxx/xxxxx+++`) sur chaque facture (une nouvelle par numéro).
 - **Aperçu PDF en direct** pendant la saisie, téléchargement en `2026_047.pdf`.
 - Suivi payé / à payer / en retard, montants du trimestre pour la déclaration TVA.
 
@@ -30,4 +30,4 @@ Ouvrez `index.html` dans un navigateur, ou servez le dossier :
 python3 -m http.server 8000
 ```
 
-Aucune étape de build. Bibliothèques incluses dans `vendor/` : [jsPDF](https://github.com/parallax/jsPDF) (MIT) et [qrcode-generator](https://github.com/kazuhikoarase/qrcode-generator) (MIT).
+Aucune étape de build. Bibliothèques incluses dans `vendor/` : [jsPDF](https://github.com/parallax/jsPDF) (MIT).

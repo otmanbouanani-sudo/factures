@@ -8,28 +8,6 @@
   const RULE = [200, 200, 200];
   const BAR = [238, 238, 238];
 
-  /* Draws the QR code as vector squares: sharp at any zoom, no canvas needed. */
-  function drawQr(doc, text, x, y, size) {
-    const qr = global.qrcode(0, 'M');
-    qr.addData(unescape(encodeURIComponent(text)), 'Byte');
-    qr.make();
-    const count = qr.getModuleCount();
-    const cell = size / count;
-    doc.setFillColor(0, 0, 0);
-    for (let r = 0; r < count; r++) {
-      let run = -1;
-      for (let c = 0; c <= count; c++) {
-        const dark = c < count && qr.isDark(r, c);
-        if (dark && run < 0) run = c;
-        if (!dark && run >= 0) {
-          // tiny overlap avoids hairline gaps between modules in some viewers
-          doc.rect(x + run * cell, y + r * cell, (c - run) * cell + 0.02, cell + 0.02, 'F');
-          run = -1;
-        }
-      }
-    }
-  }
-
   /**
    * inv: { number, date, dueDate, customer:{name,street,city,country,vat,bce}, lines:[{desc,sub,qty,price}],
    *        vatRate, vatMention, communication }
@@ -172,25 +150,16 @@
     valueCells.forEach(([a, b]) => doc.rect(a, by + 0.15, b - a, 6.7, 'F'));
     cells.forEach(([label, lx, vx, val]) => { text(label, lx, by + 4.8); text(val, vx, by + 4.8); });
 
-    // Payment instruction + QR
+    // Payment instruction
     const py = by + 13;
     font('normal', 9.5);
     const instruction = 'Veuillez payer le montant de ' + L.fmtMoney(t.total) +
       ' sur le compte mentionné ci-dessus avant le ' + L.fmtDate(inv.dueDate) +
       (inv.communication ? ' en mentionnant la référence ' + inv.communication + '.' : '.');
-    doc.splitTextToSize(instruction, 148).forEach((l, i) => text(l, 15.5, py + i * 4.2));
+    const instrLines = doc.splitTextToSize(instruction, right + 1.5 - 15.5);
+    instrLines.forEach((l, i) => text(l, 15.5, py + i * 4.2));
 
-    let qy = by + 9;
-    if (company.iban && t.total > 0) {
-      const payload = L.epcPayload({ bic: company.bic, name: company.name, iban: company.iban, cents: t.total, reference: inv.communication });
-      try {
-        drawQr(doc, payload, right + 1.5 - 26, qy, 26);
-        font('normal', 9);
-        text('Scanner pour payer', right + 1.5, qy + 29.5, { align: 'right' });
-      } catch (e) { /* QR library missing */ }
-    }
-
-    const ly = qy + 33;
+    const ly = py + (instrLines.length - 1) * 4.2 + 6;
     doc.setDrawColor.apply(doc, RULE);
     doc.line(left, ly, right + 1.5, ly);
     font('normal', 10);

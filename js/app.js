@@ -3,7 +3,7 @@
   'use strict';
   const L = window.Lib;
   const KEY = 'factures-v1';
-  const APP_VERSION = '3 · descriptions par client';
+  const APP_VERSION = '4 · sans QR code';
   const $view = document.getElementById('view');
   const $dialog = document.getElementById('dialog');
 
@@ -369,6 +369,14 @@
     };
   }
 
+  /* Grow text boxes to show their whole content, so long descriptions read in one go. */
+  function autosize(el) {
+    el.style.height = 'auto';
+    el.style.height = (el.scrollHeight + 2) + 'px';
+  }
+  function autosizeAll(root) { (root || document).querySelectorAll('textarea').forEach(autosize); }
+  window.addEventListener('resize', () => { if (state.view === 'editor') autosizeAll($view); });
+
   function isLinked(c, l) {
     if (!l.tplId) return false;
     const t = templatesOf(c).find(x => x.id === l.tplId);
@@ -459,10 +467,10 @@
                     : (c ? `<button class="btn ghost small" type="button" data-remember="${i}">Mémoriser pour ${esc(c.name)}</button>` : '')}
                 </div>
                 <label class="l-desc">Description
-                  <input type="text" data-l="desc" value="${esc(l.desc)}" placeholder="Senior Servicenow Consultancy">
+                  <textarea data-l="desc" rows="1" placeholder="Senior Servicenow Consultancy">${esc(l.desc)}</textarea>
                 </label>
                 <label class="l-sub">Détail <span class="opt">optionnel, plusieurs lignes possibles</span>
-                  <textarea data-l="sub" rows="${Math.max(1, String(l.sub || '').split('\n').length)}" placeholder="Worked days : 20">${esc(l.sub)}</textarea>
+                  <textarea data-l="sub" rows="1" placeholder="Worked days : 20">${esc(l.sub)}</textarea>
                 </label>
                 <label class="l-qty">${day ? 'Jours prestés' : 'Quantité'}
                   <input type="number" inputmode="decimal" step="0.5" min="0" data-l="qty" value="${esc(l.qty)}">
@@ -528,6 +536,7 @@
         </section>
       </div>
     `;
+    autosizeAll($view);
     schedulePreview(0);
   }
 
@@ -559,7 +568,7 @@
       el.querySelector('.l-amount').textContent = L.fmtMoney(L.lineCents(l));
       ['desc', 'sub'].forEach(k => {
         const f = el.querySelector('[data-l="' + k + '"]');
-        if (f && document.activeElement !== f && f.value !== l[k]) f.value = l[k];
+        if (f && document.activeElement !== f && f.value !== l[k]) { f.value = l[k]; autosize(f); }
       });
     });
     const box = document.querySelector('.total-box');
@@ -662,9 +671,9 @@
         <div class="dlg-body">
           <p class="hint">Cette description sera proposée dans « Réutiliser une description… » pour ce client. Les champs entre accolades sont remplis à chaque facture.</p>
           ${placeholderHelp()}
-          <label>Description <input id="rm-desc" name="desc" value="${esc(tDesc)}" required></label>
+          <label>Description <textarea id="rm-desc" name="desc" rows="1" required>${esc(tDesc)}</textarea></label>
           <label>Détail <span class="opt">optionnel</span>
-            <textarea id="rm-sub" name="sub" rows="${Math.max(2, String(tSub || '').split('\n').length)}">${esc(tSub)}</textarea></label>
+            <textarea id="rm-sub" name="sub" rows="1">${esc(tSub)}</textarea></label>
           <div class="grid2">
             <label>Facturation
               <select id="rm-mode" name="mode">
@@ -706,6 +715,7 @@
       renderEditor();
     });
     $dialog.showModal();
+    autosizeAll($dialog);
   }
 
   function placeholderHelp() {
@@ -850,9 +860,9 @@
               ${tpls.length > 1 ? `<button type="button" class="icon-btn" data-tpl-del="${k}" aria-label="Supprimer cette description">×</button>` : ''}
             </span>
           </div>
-          <label>Description <input id="tpl-desc-${k}" data-t="desc" value="${esc(t.desc)}" placeholder="Senior Servicenow Consultancy"></label>
+          <label>Description <textarea id="tpl-desc-${k}" data-t="desc" rows="1" placeholder="Senior Servicenow Consultancy">${esc(t.desc)}</textarea></label>
           <label>Détail <span class="opt">optionnel</span>
-            <textarea id="tpl-sub-${k}" data-t="sub" rows="${Math.max(1, String(t.sub || '').split('\n').length)}" placeholder="Worked days : {jours}">${esc(t.sub)}</textarea></label>
+            <textarea id="tpl-sub-${k}" data-t="sub" rows="1" placeholder="Worked days : {jours}">${esc(t.sub)}</textarea></label>
           <div class="grid2">
             <label>Facturation
               <select id="tpl-mode-${k}" data-t="mode">
@@ -863,17 +873,18 @@
               <span class="suffix"><input id="tpl-price-${k}" data-t="price" type="number" step="0.01" min="0" value="${esc(t.price)}"><i>€</i></span></label>
           </div>
         </div>`).join('');
+      autosizeAll(list);
     };
     drawTpls();
     form.addEventListener('click', e => {
       const b = e.target.closest('button');
       if (!b) return;
-      if (b.hasAttribute('data-tpl-add')) { readTpls(); tpls.push({ id: L.uid(), desc: '', sub: '', mode: 'flat', price: '' }); drawTpls(); list.querySelector('[data-tpl="' + (tpls.length - 1) + '"] input').focus(); }
+      if (b.hasAttribute('data-tpl-add')) { readTpls(); tpls.push({ id: L.uid(), desc: '', sub: '', mode: 'flat', price: '' }); drawTpls(); list.querySelector('[data-tpl="' + (tpls.length - 1) + '"] textarea').focus(); }
       else if (b.dataset.tplDel !== undefined) { readTpls(); tpls.splice(Number(b.dataset.tplDel), 1); drawTpls(); }
       else if (b.dataset.tplTop !== undefined) { readTpls(); const [t] = tpls.splice(Number(b.dataset.tplTop), 1); tpls.unshift(t); drawTpls(); }
     });
     list.addEventListener('change', e => { if (e.target.dataset.t === 'mode') { readTpls(); drawTpls(); } });
-    list.addEventListener('input', e => { if (e.target.dataset.t === 'sub') e.target.rows = Math.max(1, e.target.value.split('\n').length); });
+
 
     const updateHints = () => {
       const country = F('country').value;
@@ -925,6 +936,7 @@
       if (onSaved) onSaved(data); else render();
     });
     $dialog.showModal();
+    autosizeAll($dialog);
     setTimeout(() => F('name').focus(), 30);
   }
 
@@ -1223,6 +1235,7 @@
 
   document.addEventListener('input', e => {
     const el = e.target;
+    if (el.tagName === 'TEXTAREA') autosize(el);
     const d = state.draft;
     if (!d || state.view !== 'editor') return;
     const f = el.dataset.f;
@@ -1235,7 +1248,8 @@
       const k = el.dataset.l;
       const wasLinked = isLinked(customerById(d.customerId), l);
       if (k === 'desc') { l.desc = el.value; l.tplDesc = null; }
-      else if (k === 'sub') { l.sub = el.value; l.tplSub = null; el.rows = Math.max(1, el.value.split('\n').length); }
+      else if (k === 'sub') { l.sub = el.value; l.tplSub = null; }
+      if (el.tagName === 'TEXTAREA') autosize(el);
       else if (k === 'qty') { l.qty = el.value === '' ? 0 : Number(el.value); renderLine(l, d.period); }
       else if (k === 'price') { l.price = el.value === '' ? 0 : Number(el.value); renderLine(l, d.period); }
       if (wasLinked && (k === 'desc' || k === 'sub')) { d.dirty = true; renderEditorKeepFocus(el); return; }
