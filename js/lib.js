@@ -158,6 +158,58 @@
     ].join('\n');
   }
 
+  const MONTHS_EN = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August',
+    'September', 'October', 'November', 'December'];
+
+  function periodLabelEn(period) {
+    if (!period) return '';
+    const [y, m] = period.split('-').map(Number);
+    return (MONTHS_EN[m - 1] || '') + ' ' + y;
+  }
+
+  function plainNumber(n) {
+    const v = Number(n) || 0;
+    return Number.isInteger(v) ? String(v) : fmtNumber(v, 2).replace(/,?0+$/, '');
+  }
+
+  /*
+   * Reusable descriptions. Placeholders filled per invoice:
+   *   {mois}  -> "Septembre 2026"   {month} -> "September 2026"
+   *   {jours} -> quantity (days)    {tarif} -> unit price
+   */
+  const PLACEHOLDERS = ['{mois}', '{month}', '{jours}', '{tarif}'];
+
+  function renderTemplate(tpl, ctx) {
+    if (tpl == null) return '';
+    return String(tpl)
+      .replace(/\{mois\}/gi, periodLabel(ctx.period))
+      .replace(/\{month\}/gi, periodLabelEn(ctx.period))
+      .replace(/\{jours\}/gi, plainNumber(ctx.qty))
+      .replace(/\{tarif\}/gi, plainNumber(ctx.price));
+  }
+
+  function hasPlaceholder(s) { return /\{(mois|month|jours|tarif)\}/i.test(String(s || '')); }
+
+  /* Turns text typed on an invoice back into a reusable template (month, days and rate become placeholders). */
+  function toTemplate(text, ctx) {
+    let s = String(text || '');
+    const swaps = [];
+    const fr = periodLabel(ctx.period), en = periodLabelEn(ctx.period);
+    if (fr) swaps.push([fr, '{mois}']);
+    if (en) swaps.push([en, '{month}']);
+    swaps.forEach(([from, to]) => {
+      const re = new RegExp(from.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+      s = s.replace(re, to);
+    });
+    const num = (n, ph) => {
+      const v = plainNumber(n);
+      if (!Number(n) || v === '1') return;
+      s = s.replace(new RegExp('(^|[^\\d.,])' + v.replace('.', '\\.') + '(?![\\d,]*\\d)', 'g'), (m, pre) => pre + ph);
+    };
+    if (Number(ctx.qty) !== Number(ctx.price)) { num(ctx.price, '{tarif}'); num(ctx.qty, '{jours}'); }
+    return s;
+  }
+
   function uid() {
     return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
   }
@@ -168,6 +220,7 @@
     COUNTRIES, MONTHS, MENTION_EU, MENTION_NON_EU,
     countryName, isEU, vatRegime, toCents, lineCents, totals, fmtMoney, fmtQty, fmtNumber,
     todayISO, parseISO, toISO, fmtDate, addDays, periodLabel, previousPeriod, dueDate, termsLabel,
-    ogm, ogmIsValid, cleanIban, fmtIban, epcPayload, uid, pad, invoiceNumber
+    ogm, ogmIsValid, cleanIban, fmtIban, epcPayload, uid, pad, invoiceNumber,
+    periodLabelEn, plainNumber, PLACEHOLDERS, renderTemplate, hasPlaceholder, toTemplate
   };
 })(typeof window !== 'undefined' ? window : globalThis);

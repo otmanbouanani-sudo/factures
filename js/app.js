@@ -25,12 +25,30 @@
     };
   }
 
+  /* Older data kept one description per customer; now each customer has a list of reusable descriptions. */
+  function migrateCustomer(c) {
+    if (!Array.isArray(c.templates) || !c.templates.length) {
+      const flat = c.billing === 'flat';
+      c.templates = [{
+        id: L.uid(), desc: c.description || 'Senior Servicenow Consultancy',
+        sub: flat ? '' : 'Worked days : {jours}', mode: flat ? 'flat' : 'day', price: Number(c.rate) || 0
+      }];
+    }
+    delete c.description; delete c.billing; delete c.rate;
+    return c;
+  }
+
+  function migrate(data) {
+    (data.customers || []).forEach(migrateCustomer);
+    return data;
+  }
+
   function load() {
     try {
       const raw = localStorage.getItem(KEY);
       if (raw) {
         const data = JSON.parse(raw);
-        if (data && data.settings && Array.isArray(data.invoices)) return data;
+        if (data && data.settings && Array.isArray(data.invoices)) return migrate(data);
       }
     } catch (e) { /* fall through to defaults */ }
     return defaults();
@@ -92,10 +110,6 @@
   }
   const STATUS_LABEL = { paid: 'Payée', open: 'À payer', late: 'En retard' };
 
-  function workedDaysText(qty) {
-    const q = Number(qty) || 0;
-    return 'Worked days : ' + (Number.isInteger(q) ? q : L.fmtQty(q));
-  }
 
   /* ---------- routing ---------- */
 
@@ -248,12 +262,47 @@
 
   /* ---------- editor ---------- */
 
+  const templatesOf = c => (c && Array.isArray(c.templates)) ? c.templates : [];
+
+  function renderLine(l, period) {
+    const ctx = { period, qty: l.qty, price: l.price };
+    if (l.tplDesc != null) l.desc = L.renderTemplate(l.tplDesc, ctx);
+    if (l.tplSub != null) l.sub = L.renderTemplate(l.tplSub, ctx);
+    return l;
+  }
+
+  function lineFromTemplate(t, period) {
+    const mode = t.mode === 'flat' ? 'flat' : 'day';
+    return renderLine({
+      tplId: t.id || null, tplDesc: t.desc || '', tplSub: t.sub || '', mode,
+      desc: '', sub: '', qty: mode === 'flat' ? 1 : weekdays(period), price: Number(t.price) || 0
+    }, period);
+  }
+
   function lineForCustomer(c, period) {
-    const tpl = (c && c.description) || 'Senior Servicenow Consultancy';
-    const desc = tpl.replace(/\{mois\}/gi, L.periodLabel(period));
-    if (c && c.billing === 'flat') return { tpl, desc, sub: '', subAuto: false, qty: 1, price: Number(c.rate) || 0 };
-    const qty = weekdays(period);
-    return { tpl, desc, sub: workedDaysText(qty), subAuto: true, qty, price: c ? Number(c.rate) || 0 : 0 };
+    const t = templatesOf(c)[0];
+    if (t) return lineFromTemplate(t, period);
+    return renderLine({ tplId: null, tplDesc: 'Senior Servicenow Consultancy', tplSub: 'Worked days : {jours}', mode: 'day', desc: '', sub: '', qty: weekdays(period), price: 0 }, period);
+  }
+
+  /* Descriptions already invoiced to this customer that aren't saved yet, newest first. */
+  function historyFor(customerId) {
+    const c = customerById(customerId);
+    const saved = new Set(templatesOf(c).map(t => (t.desc + '\n' + (t.sub || '')).toLowerCase()));
+    const seen = new Set();
+    const out = [];
+    db.invoices.filter(i => i.customerId === customerId)
+      .sort((a, b) => (b.year - a.year) || (b.seq - a.seq))
+      .forEach(inv => inv.lines.forEach(l => {
+        const ctx = { period: inv.period, qty: l.qty, price: l.price };
+        const tDesc = l.tplDesc != null ? l.tplDesc : L.toTemplate(l.desc, ctx);
+        const tSub = l.tplSub != null ? l.tplSub : L.toTemplate(l.sub, ctx);
+        const key = (tDesc + '\n' + (tSub || '')).toLowerCase();
+        if (!tDesc || saved.has(key) || seen.has(key)) return;
+        seen.add(key);
+        out.push({ desc: tDesc, sub: tSub, mode: l.mode || (Number(l.qty) === 1 ? 'flat' : 'day'), price: l.price, from: inv.number });
+      }));
+    return out.slice(0, 8);
   }
 
   function newDraft(customerId) {
@@ -302,14 +351,11 @@
     if (!d.dueManual) d.dueDate = L.dueDate(c ? c.terms : { type: 'days', days: 30 }, d.date, d.period);
     // communication
     if (!d.commManual) {
-      const be = !c || c.country === 'BE';
-      d.communication = be ? L.ogm(d.year, d.seq) : 'Facture ' + d.number;
+      // a fresh structured communication per invoice, for every customer (as on the previous invoices)
+      d.communication = L.ogm(d.year, d.seq);
     }
     // line descriptions that follow the month
-    d.lines.forEach(l => {
-      if (l.tpl) l.desc = l.tpl.replace(/\{mois\}/gi, L.periodLabel(d.period));
-      if (l.subAuto) l.sub = workedDaysText(l.qty);
-    });
+    d.lines.forEach(l => renderLine(l, d.period));
   }
 
   function draftAsInvoice(d) {
@@ -322,9 +368,23 @@
     };
   }
 
+  function isLinked(c, l) {
+    if (!l.tplId) return false;
+    const t = templatesOf(c).find(x => x.id === l.tplId);
+    return !!t && t.desc === l.tplDesc && (t.sub || '') === (l.tplSub || '');
+  }
+
+  function previewTpl(t, period) {
+    const one = L.renderTemplate(t.desc, { period, qty: t.mode === 'flat' ? 1 : weekdays(period), price: t.price });
+    const rate = Number(t.price) ? ' · ' + L.fmtMoney(L.toCents(t.price)) + (t.mode === 'flat' ? '' : ' /jour') : '';
+    return (one.length > 60 ? one.slice(0, 58) + '…' : one) + rate;
+  }
+
   function renderEditor() {
     const d = state.draft;
     const c = customerById(d.customerId);
+    const hist = c ? historyFor(c.id) : [];
+    state.hist = hist;
     const regime = L.vatRegime(c ? c.country : 'BE');
     const t = L.totals(draftAsInvoice(d));
     const existing = !!d.id;
@@ -375,23 +435,44 @@
           <fieldset class="block">
             <legend>Prestations</legend>
             <div class="lines">
-              ${d.lines.map((l, i) => `
+              ${d.lines.map((l, i) => {
+                const day = l.mode !== 'flat';
+                const tpls = templatesOf(c);
+                const linked = isLinked(c, l);
+                const pick = c && (tpls.length || hist.length) ? `
+                  <label class="l-pick"><span class="sr">Réutiliser une description</span>
+                    <select data-pick="${i}">
+                      <option value="">Réutiliser une description…</option>
+                      ${tpls.length ? `<optgroup label="Enregistrées pour ${esc(c.name)}">${tpls.map(t =>
+                        `<option value="t:${t.id}">${esc(previewTpl(t, d.period))}</option>`).join('')}</optgroup>` : ''}
+                      ${hist.length ? `<optgroup label="Déjà facturées">${hist.map((h, k) =>
+                        `<option value="h:${k}">${esc(previewTpl(h, d.period))} (${esc(h.from)})</option>`).join('')}</optgroup>` : ''}
+                    </select>
+                  </label>` : '';
+                return `
               <div class="line" data-line="${i}">
+                <div class="l-tools">
+                  ${pick}
+                  ${linked
+                    ? '<span class="l-linked">Description enregistrée · le mois, les jours et le tarif se mettent à jour</span>'
+                    : (c ? `<button class="btn ghost small" type="button" data-remember="${i}">Mémoriser pour ${esc(c.name)}</button>` : '')}
+                </div>
                 <label class="l-desc">Description
                   <input type="text" data-l="desc" value="${esc(l.desc)}" placeholder="Senior Servicenow Consultancy">
                 </label>
-                <label class="l-sub">Détail <span class="opt">optionnel</span>
-                  <input type="text" data-l="sub" value="${esc(l.sub)}" placeholder="Worked days : 20">
+                <label class="l-sub">Détail <span class="opt">optionnel, plusieurs lignes possibles</span>
+                  <textarea data-l="sub" rows="${Math.max(1, String(l.sub || '').split('\n').length)}" placeholder="Worked days : 20">${esc(l.sub)}</textarea>
                 </label>
-                <label class="l-qty">${l.subAuto ? 'Jours prestés' : 'Quantité'}
+                <label class="l-qty">${day ? 'Jours prestés' : 'Quantité'}
                   <input type="number" inputmode="decimal" step="0.5" min="0" data-l="qty" value="${esc(l.qty)}">
                 </label>
-                <label class="l-price">${l.subAuto ? 'Tarif journalier' : 'Prix unitaire'}
+                <label class="l-price">${day ? 'Tarif journalier' : 'Prix unitaire'}
                   <span class="suffix"><input type="number" inputmode="decimal" step="0.01" min="0" data-l="price" value="${esc(l.price)}"><i>€</i></span>
                 </label>
                 <div class="l-amount" aria-label="Montant">${L.fmtMoney(L.lineCents(l))}</div>
                 ${d.lines.length > 1 ? `<button class="icon-btn" type="button" data-remove-line="${i}" aria-label="Retirer cette ligne">×</button>` : ''}
-              </div>`).join('')}
+              </div>`;
+              }).join('')}
             </div>
             <button class="btn ghost small" type="button" data-action="add-line">Ajouter une ligne</button>
           </fieldset>
@@ -475,8 +556,10 @@
       const l = d.lines[Number(el.dataset.line)];
       if (!l) return;
       el.querySelector('.l-amount').textContent = L.fmtMoney(L.lineCents(l));
-      const sub = el.querySelector('[data-l="sub"]');
-      if (l.subAuto && sub && document.activeElement !== sub) sub.value = l.sub;
+      ['desc', 'sub'].forEach(k => {
+        const f = el.querySelector('[data-l="' + k + '"]');
+        if (f && document.activeElement !== f && f.value !== l[k]) f.value = l[k];
+      });
     });
     const box = document.querySelector('.total-box');
     if (box) {
@@ -508,6 +591,10 @@
     const year = Number(m[1]), seq = Number(m[2]);
     const inv = draftAsInvoice(d);
     const now = new Date().toISOString();
+    inv.lines = d.lines.map(l => ({
+      desc: l.desc, sub: l.sub, qty: Number(l.qty) || 0, price: Number(l.price) || 0, mode: l.mode || 'day',
+      tplId: l.tplId || null, tplDesc: l.tplDesc != null ? l.tplDesc : null, tplSub: l.tplSub != null ? l.tplSub : null
+    }));
     const record = Object.assign({}, inv, {
       id: d.id || L.uid(), year, seq, number: L.invoiceNumber(year, seq), customerId: d.customerId,
       company: Object.assign({}, db.settings.company),
@@ -527,12 +614,110 @@
     return record;
   }
 
+  /* Re-render the editor after a structural change while typing, keeping the caret where it was. */
+  function renderEditorKeepFocus(el) {
+    const lineEl = el.closest('[data-line]');
+    const sel = lineEl ? '[data-line="' + lineEl.dataset.line + '"] [data-l="' + el.dataset.l + '"]' : null;
+    const pos = el.selectionStart;
+    renderEditor();
+    const again = sel && document.querySelector(sel);
+    if (again) { again.focus(); try { again.setSelectionRange(pos, pos); } catch (e) { /* number inputs */ } }
+  }
+
+  function applyPick(d, i, value) {
+    const c = customerById(d.customerId);
+    if (!c || !value) return;
+    let src = null;
+    if (value.startsWith('t:')) {
+      const t = templatesOf(c).find(x => x.id === value.slice(2));
+      if (t) src = t;
+    } else if (value.startsWith('h:')) {
+      const h = (state.hist || [])[Number(value.slice(2))];
+      if (h) src = Object.assign({ id: null }, h);
+    }
+    if (!src) return;
+    const line = lineFromTemplate(src, d.period);
+    const old = d.lines[i];
+    // keep the days already typed when switching between day-rate descriptions
+    if (old && line.mode === 'day' && old.mode !== 'flat' && Number(old.qty)) line.qty = old.qty;
+    d.lines[i] = renderLine(line, d.period);
+    d.dirty = true;
+  }
+
+  /* Save a line's description as a reusable one for the customer. */
+  function openRememberDialog(i) {
+    const d = state.draft;
+    const c = customerById(d.customerId);
+    const l = d.lines[i];
+    if (!c || !l) return;
+    if (!String(l.desc || '').trim()) { toast('Écrivez d’abord la description à mémoriser.'); return; }
+    const ctx = { period: d.period, qty: l.qty, price: l.price };
+    const tDesc = l.tplDesc != null ? l.tplDesc : L.toTemplate(l.desc, ctx);
+    const tSub = l.tplSub != null ? l.tplSub : L.toTemplate(l.sub, ctx);
+    $dialog.innerHTML = `
+      <form class="dlg" id="remember-form" novalidate>
+        <header><h2>Mémoriser pour ${esc(c.name)}</h2>
+          <button type="button" class="icon-btn" data-close aria-label="Fermer">×</button></header>
+        <div class="dlg-body">
+          <p class="hint">Cette description sera proposée dans « Réutiliser une description… » pour ce client. Les champs entre accolades sont remplis à chaque facture.</p>
+          ${placeholderHelp()}
+          <label>Description <input id="rm-desc" name="desc" value="${esc(tDesc)}" required></label>
+          <label>Détail <span class="opt">optionnel</span>
+            <textarea id="rm-sub" name="sub" rows="${Math.max(2, String(tSub || '').split('\n').length)}">${esc(tSub)}</textarea></label>
+          <div class="grid2">
+            <label>Facturation
+              <select id="rm-mode" name="mode">
+                <option value="day" ${l.mode !== 'flat' ? 'selected' : ''}>Au jour presté</option>
+                <option value="flat" ${l.mode === 'flat' ? 'selected' : ''}>Montant forfaitaire</option>
+              </select></label>
+            <label>Prix <span class="suffix"><input id="rm-price" name="price" type="number" step="0.01" min="0" value="${esc(l.price)}"><i>€</i></span></label>
+          </div>
+          <label class="check"><input type="checkbox" id="rm-default" name="isDefault"> Proposer par défaut sur les nouvelles factures de ${esc(c.name)}</label>
+          <div class="tpl-preview"><span>Aperçu pour ${esc(L.periodLabel(d.period))}</span><p id="rm-preview"></p></div>
+        </div>
+        <footer><span></span><div>
+          <button type="button" class="btn ghost" data-close>Annuler</button>
+          <button type="submit" class="btn primary">Mémoriser</button>
+        </div></footer>
+      </form>`;
+    const form = $dialog.querySelector('form');
+    const F = n => form.elements.namedItem(n);
+    const preview = () => {
+      const qty = F('mode').value === 'flat' ? 1 : l.qty;
+      const ctx2 = { period: d.period, qty, price: F('price').value };
+      const a = L.renderTemplate(F('desc').value, ctx2), b = L.renderTemplate(F('sub').value, ctx2);
+      form.querySelector('#rm-preview').textContent = a + (b ? '\n' + b : '');
+    };
+    form.addEventListener('input', preview);
+    preview();
+    form.addEventListener('submit', e => {
+      e.preventDefault();
+      const desc = F('desc').value.trim();
+      if (!desc) { F('desc').focus(); toast('Indiquez une description.'); return; }
+      const t = { id: L.uid(), desc, sub: F('sub').value.replace(/\s+$/, ''), mode: F('mode').value, price: Number(F('price').value) || 0 };
+      c.templates = templatesOf(c).slice();
+      if (F('isDefault').checked) c.templates.unshift(t); else c.templates.push(t);
+      save();
+      Object.assign(l, { tplId: t.id, tplDesc: t.desc, tplSub: t.sub, mode: t.mode, price: t.price });
+      renderLine(l, d.period);
+      $dialog.close();
+      toast('Description mémorisée pour ' + c.name + '.');
+      renderEditor();
+    });
+    $dialog.showModal();
+  }
+
+  function placeholderHelp() {
+    return `<p class="ph-help">Champs disponibles : <code>{mois}</code> Septembre 2026 · <code>{month}</code> September 2026 · <code>{jours}</code> jours prestés · <code>{tarif}</code> tarif</p>`;
+  }
+
   function draftFromInvoice(inv) {
     const f = inv.flags || {};
     return {
       id: inv.id, year: inv.year, seq: inv.seq, number: inv.number, numberManual: true,
       customerId: inv.customerId, date: inv.date, period: inv.period || '', dueDate: inv.dueDate,
-      dueManual: true, lines: inv.lines.map(l => ({ desc: l.desc, sub: l.sub, qty: l.qty, price: l.price, subAuto: false, tpl: null })),
+      dueManual: true, lines: inv.lines.map(l => ({ desc: l.desc, sub: l.sub, qty: l.qty, price: l.price, mode: l.mode || 'day',
+        tplId: l.tplId || null, tplDesc: l.tplDesc != null ? l.tplDesc : null, tplSub: l.tplSub != null ? l.tplSub : null })),
       vatRate: inv.vatRate, vatMention: inv.vatMention || '', vatManual: true, communication: inv.communication,
       commManual: true, status: inv.status, paidAt: inv.paidAt, createdAt: inv.createdAt, dirty: false, _flags: f
     };
@@ -564,7 +749,8 @@
               <p>${esc([c.street, c.city].filter(Boolean).join(', '))}<br>${esc(L.countryName(c.country))}${c.vat ? ' · TVA ' + esc(c.vat) : ''}</p>
             </div>
             <dl class="cust-facts">
-              <div><dt>${c.billing === 'flat' ? 'Forfait' : 'Tarif journalier'}</dt><dd>${L.fmtMoney(L.toCents(c.rate))}</dd></div>
+              <div><dt>${(templatesOf(c)[0] || {}).mode === 'flat' ? 'Forfait' : 'Tarif journalier'}</dt><dd>${L.fmtMoney(L.toCents((templatesOf(c)[0] || {}).price))}</dd></div>
+              <div><dt>Descriptions</dt><dd>${templatesOf(c).length}</dd></div>
               <div><dt>TVA</dt><dd>${r.rate} %</dd></div>
               <div><dt>Paiement</dt><dd>${esc(L.termsLabel(c.terms))}</dd></div>
               <div><dt>Factures</dt><dd>${count}</dd></div>
@@ -583,9 +769,11 @@
   function openCustomerDialog(id, onSaved) {
     const c = id ? customerById(id) : {
       id: null, name: '', street: '', city: '', country: 'BE', vat: '', bce: '', email: '',
-      billing: 'day', rate: '', description: 'Senior Servicenow Consultancy', terms: { type: 'eom_next', days: 30 }
+      templates: [{ id: L.uid(), desc: 'Senior Servicenow Consultancy', sub: 'Worked days : {jours}', mode: 'day', price: '' }],
+      terms: { type: 'eom_next', days: 30 }
     };
     const terms = c.terms || { type: 'days', days: 30 };
+    let tpls = templatesOf(c).map(t => Object.assign({}, t));
     $dialog.innerHTML = `
       <form method="dialog" class="dlg" id="cust-form" novalidate>
         <header><h2>${id ? 'Modifier le client' : 'Nouveau client'}</h2>
@@ -610,22 +798,11 @@
             <label>E-mail facturation <span class="opt">optionnel</span><input name="email" type="email" value="${esc(c.email)}"></label>
           </div>
 
-          <h3>Facturation par défaut</h3>
-          <div class="grid2">
-            <label>Mode
-              <select name="billing">
-                <option value="day" ${c.billing !== 'flat' ? 'selected' : ''}>Au jour presté</option>
-                <option value="flat" ${c.billing === 'flat' ? 'selected' : ''}>Montant forfaitaire</option>
-              </select>
-            </label>
-            <label><span data-rate-label>${c.billing === 'flat' ? 'Montant' : 'Tarif journalier'}</span>
-              <span class="suffix"><input name="rate" type="number" step="0.01" min="0" value="${esc(c.rate)}" required><i>€</i></span>
-            </label>
-          </div>
-          <label>Description sur la facture
-            <input name="description" value="${esc(c.description)}">
-          </label>
-          <p class="hint">Écrivez {mois} pour insérer le mois presté, par exemple « Frais Bureau {mois} ».</p>
+          <h3>Descriptions et tarifs</h3>
+          <p class="hint">La première est proposée par défaut sur chaque nouvelle facture ; les autres restent à portée de main dans « Réutiliser une description… ».</p>
+          ${placeholderHelp()}
+          <div class="tpl-list" id="tpl-list"></div>
+          <button type="button" class="btn ghost small" data-tpl-add>Ajouter une description</button>
 
           <h3>Conditions de paiement</h3>
           <div class="grid2">
@@ -651,6 +828,51 @@
       </form>`;
     const form = $dialog.querySelector('form');
     const F = n => form.elements.namedItem(n);
+    const list = form.querySelector('#tpl-list');
+
+    const readTpls = () => {
+      list.querySelectorAll('[data-tpl]').forEach(row => {
+        const t = tpls[Number(row.dataset.tpl)];
+        t.desc = row.querySelector('[data-t="desc"]').value;
+        t.sub = row.querySelector('[data-t="sub"]').value;
+        t.mode = row.querySelector('[data-t="mode"]').value;
+        t.price = row.querySelector('[data-t="price"]').value;
+      });
+    };
+    const drawTpls = () => {
+      list.innerHTML = tpls.map((t, k) => `
+        <div class="tpl" data-tpl="${k}">
+          <div class="tpl-head">
+            <span class="tpl-tag">${k === 0 ? 'Par défaut' : 'Description ' + (k + 1)}</span>
+            <span class="tpl-acts">
+              ${k > 0 ? `<button type="button" class="btn ghost small" data-tpl-top="${k}">Mettre par défaut</button>` : ''}
+              ${tpls.length > 1 ? `<button type="button" class="icon-btn" data-tpl-del="${k}" aria-label="Supprimer cette description">×</button>` : ''}
+            </span>
+          </div>
+          <label>Description <input id="tpl-desc-${k}" data-t="desc" value="${esc(t.desc)}" placeholder="Senior Servicenow Consultancy"></label>
+          <label>Détail <span class="opt">optionnel</span>
+            <textarea id="tpl-sub-${k}" data-t="sub" rows="${Math.max(1, String(t.sub || '').split('\n').length)}" placeholder="Worked days : {jours}">${esc(t.sub)}</textarea></label>
+          <div class="grid2">
+            <label>Facturation
+              <select id="tpl-mode-${k}" data-t="mode">
+                <option value="day" ${t.mode !== 'flat' ? 'selected' : ''}>Au jour presté</option>
+                <option value="flat" ${t.mode === 'flat' ? 'selected' : ''}>Montant forfaitaire</option>
+              </select></label>
+            <label>${t.mode === 'flat' ? 'Montant' : 'Tarif journalier'}
+              <span class="suffix"><input id="tpl-price-${k}" data-t="price" type="number" step="0.01" min="0" value="${esc(t.price)}"><i>€</i></span></label>
+          </div>
+        </div>`).join('');
+    };
+    drawTpls();
+    form.addEventListener('click', e => {
+      const b = e.target.closest('button');
+      if (!b) return;
+      if (b.hasAttribute('data-tpl-add')) { readTpls(); tpls.push({ id: L.uid(), desc: '', sub: '', mode: 'flat', price: '' }); drawTpls(); list.querySelector('[data-tpl="' + (tpls.length - 1) + '"] input').focus(); }
+      else if (b.dataset.tplDel !== undefined) { readTpls(); tpls.splice(Number(b.dataset.tplDel), 1); drawTpls(); }
+      else if (b.dataset.tplTop !== undefined) { readTpls(); const [t] = tpls.splice(Number(b.dataset.tplTop), 1); tpls.unshift(t); drawTpls(); }
+    });
+    list.addEventListener('change', e => { if (e.target.dataset.t === 'mode') { readTpls(); drawTpls(); } });
+    list.addEventListener('input', e => { if (e.target.dataset.t === 'sub') e.target.rows = Math.max(1, e.target.value.split('\n').length); });
 
     const updateHints = () => {
       const country = F('country').value;
@@ -660,8 +882,6 @@
         : (L.isEU(country)
           ? 'Client UE : TVA 0 % en autoliquidation. Son n° de TVA doit figurer sur la facture.'
           : 'Client hors UE : TVA 0 %, mention « non soumise à la TVA belge » ajoutée.');
-      const flat = F('billing').value === 'flat';
-      form.querySelector('[data-rate-label]').textContent = flat ? 'Montant' : 'Tarif journalier';
       const eom = F('termsType').value === 'eom_next';
       form.querySelector('[data-days]').hidden = eom;
       const ex = eom ? 'Exemple : septembre presté, à payer avant le 31 octobre.'
@@ -675,7 +895,17 @@
     form.addEventListener('submit', e => {
       e.preventDefault();
             if (!F('name').value.trim()) { F('name').focus(); toast('Indiquez le nom du client.'); return; }
-      if (F('rate').value === '' || Number(F('rate').value) < 0) { F('rate').focus(); toast('Indiquez le tarif.'); return; }
+      readTpls();
+      const cleanTpls = tpls.filter(t => t.desc.trim()).map(t => ({
+        id: t.id || L.uid(), desc: t.desc.trim(), sub: String(t.sub || '').replace(/\s+$/, ''), mode: t.mode === 'flat' ? 'flat' : 'day', price: Number(t.price) || 0
+      }));
+      if (!cleanTpls.length) { toast('Ajoutez au moins une description.'); return; }
+      if (!cleanTpls[0].price) {
+        const p = list.querySelector('[data-tpl="0"] [data-t="price"]');
+        if (p) p.focus();
+        toast('Indiquez le tarif de la description par défaut.');
+        return;
+      }
       const country = F('country').value;
       if (country !== 'BE' && L.isEU(country) && !F('vat').value.trim()) {
         if (!confirm('Un client UE sans numéro de TVA ne peut pas être facturé en autoliquidation. Continuer quand même ?')) return;
@@ -683,7 +913,7 @@
       const data = {
         id: c.id || L.uid(), name: F('name').value.trim(), street: F('street').value.trim(), city: F('city').value.trim(),
         country, vat: F('vat').value.replace(/\s+/g, '').toUpperCase(), bce: F('bce').value.trim(), email: F('email').value.trim(),
-        billing: F('billing').value, rate: Number(F('rate').value), description: F('description').value.trim(),
+        templates: cleanTpls,
         terms: F('termsType').value === 'eom_next' ? { type: 'eom_next', months: 1 } : { type: 'days', days: Number(F('termsDays').value || 0) }
       };
       const idx = db.customers.findIndex(x => x.id === data.id);
@@ -907,7 +1137,12 @@
       const c = customerById(src.customerId);
       d.lines = src.lines.map((l, i) => {
         const fresh = c && i === 0 ? lineForCustomer(c, d.period) : null;
-        return fresh ? Object.assign(fresh, { price: l.price }) : { desc: l.desc, sub: l.sub, qty: l.qty, price: l.price, subAuto: false, tpl: null };
+        if (l.tplDesc != null || l.tplSub != null) {
+          const mode = l.mode || 'day';
+          return { tplId: l.tplId || null, tplDesc: l.tplDesc, tplSub: l.tplSub, mode, desc: l.desc, sub: l.sub,
+            qty: mode === 'flat' ? l.qty : weekdays(d.period), price: l.price };
+        }
+        return fresh ? Object.assign(fresh, { price: l.price }) : { desc: l.desc, sub: l.sub, qty: l.qty, price: l.price, mode: l.mode || 'flat', tplId: null, tplDesc: null, tplSub: null };
       });
       recompute(d);
       d.dirty = true;
@@ -936,12 +1171,13 @@
     const d = state.draft;
     if (!d) return;
     if (ds.action === 'add-line') {
-      d.lines.push({ desc: '', sub: '', subAuto: false, tpl: null, qty: 1, price: 0 });
+      d.lines.push({ desc: '', sub: '', mode: 'flat', tplId: null, tplDesc: null, tplSub: null, qty: 1, price: 0 });
       d.dirty = true; renderEditor();
       const inputs = document.querySelectorAll('[data-l="desc"]');
       inputs[inputs.length - 1].focus();
       return;
     }
+    if (ds.remember !== undefined) { openRememberDialog(Number(ds.remember)); return; }
     if (ds.removeLine !== undefined) { d.lines.splice(Number(ds.removeLine), 1); d.dirty = true; renderEditor(); return; }
     if (ds.reset === 'due') { d.dueManual = false; recompute(d); renderEditor(); return; }
     if (ds.reset === 'vat') { d.vatManual = false; recompute(d); renderEditor(); return; }
@@ -962,6 +1198,7 @@
     const d = state.draft;
     if (!d || state.view !== 'editor') return;
     const f = el.dataset.f;
+    if (el.dataset.pick !== undefined) { applyPick(d, Number(el.dataset.pick), el.value); renderEditor(); return; }
     if (f === 'customerId') { applyCustomer(d, customerById(el.value)); d.dirty = true; renderEditor(); return; }
     if (f === 'period' || f === 'date') { d[f] = el.value; recompute(d); d.dirty = true; renderEditor(); return; }
     if (f === 'vatRate') {
@@ -994,10 +1231,12 @@
     if (lineEl && el.dataset.l) {
       const l = d.lines[Number(lineEl.dataset.line)];
       const k = el.dataset.l;
-      if (k === 'desc') { l.desc = el.value; l.tpl = null; }
-      else if (k === 'sub') { l.sub = el.value; l.subAuto = false; }
-      else if (k === 'qty') { l.qty = el.value === '' ? 0 : Number(el.value); if (l.subAuto) l.sub = workedDaysText(l.qty); }
-      else if (k === 'price') { l.price = el.value === '' ? 0 : Number(el.value); }
+      const wasLinked = isLinked(customerById(d.customerId), l);
+      if (k === 'desc') { l.desc = el.value; l.tplDesc = null; }
+      else if (k === 'sub') { l.sub = el.value; l.tplSub = null; el.rows = Math.max(1, el.value.split('\n').length); }
+      else if (k === 'qty') { l.qty = el.value === '' ? 0 : Number(el.value); renderLine(l, d.period); }
+      else if (k === 'price') { l.price = el.value === '' ? 0 : Number(el.value); renderLine(l, d.period); }
+      if (wasLinked && (k === 'desc' || k === 'sub')) { d.dirty = true; renderEditorKeepFocus(el); return; }
       d.dirty = true;
       refreshEditorNumbers();
     }

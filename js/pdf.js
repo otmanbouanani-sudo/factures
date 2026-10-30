@@ -71,7 +71,8 @@
     font('bold', 10);
     text(company.name, left + 0.8, y);
     font('normal', 10);
-    [company.owner, company.street, company.city].filter(Boolean).forEach(l => { y += 4.2; text(l, left + 0.8, y); });
+    const foreign = c.country && c.country !== 'BE';
+    [company.owner, company.street, company.city, foreign ? 'Belgique' : ''].filter(Boolean).forEach(l => { y += 4.2; text(l, left + 0.8, y); });
     y += 8.4;
     if (company.vat) { text('TVA ' + company.vat, left + 0.8, y); y += 4.2; }
     if (company.bce) { text('BCE ' + company.bce, left + 0.8, y); }
@@ -137,14 +138,14 @@
     text('Total HTVA', 146.5, ky, { align: 'right' });
     text(L.fmtMoney(t.htva), colAmount, ky, { align: 'right' });
     ky += 4.2;
-    const rateLabel = 'TVA ' + String(inv.vatRate).replace('.', ',') + '%';
+    const rateLabel = 'TVA ' + String(inv.vatRate).replace('.', ',') + '%' + (inv.vatMention ? '*' : '');
     text(rateLabel, 146.5, ky, { align: 'right' });
     text(L.fmtMoney(t.vat), colAmount, ky, { align: 'right' });
 
     // VAT exemption mention (0 % invoices)
     if (inv.vatMention) {
       font('italic', 8.5);
-      const m = doc.splitTextToSize(inv.vatMention, 86);
+      const m = doc.splitTextToSize('* ' + inv.vatMention, 86);
       m.forEach((l, i) => text(l, 17.5, bottom + 10 + i * 3.8));
     }
 
