@@ -3,6 +3,7 @@
   'use strict';
   const L = window.Lib;
   const KEY = 'factures-v1';
+  const APP_VERSION = '3 · descriptions par client';
   const $view = document.getElementById('view');
   const $dialog = document.getElementById('dialog');
 
@@ -972,6 +973,7 @@
           <button class="btn primary" type="button" data-action="export">Exporter une sauvegarde</button>
           <label class="btn">Restaurer une sauvegarde<input type="file" accept="application/json,.json" id="import-input" hidden></label>
         </div>
+        <p class="hint">Version de l’application : ${APP_VERSION}</p>
       </section>
     `;
 
